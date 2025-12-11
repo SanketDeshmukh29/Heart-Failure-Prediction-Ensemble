@@ -22,5 +22,3 @@ def predict():
 def chatbot():
     return render_template('ChatBot.html')
 
-if __name__ == "__main__":
-    app.run(debug=True)
