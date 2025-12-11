@@ -9,6 +9,8 @@ groq==0.5.0
 numpy==1.26.4
 pandas==2.2.1
 scikit-learn==1.4.1
+catboost==1.2.2
+plotly==5.18.0
 
 # Utility libraries
 requests==2.31.0
