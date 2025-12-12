@@ -1,6 +1,5 @@
 setuptools>=65.0.0
 wheel>=0.38.0
-pip>=23.0.0
 
 Flask==2.3.3
 gunicorn==21.2.0
@@ -9,9 +8,9 @@ python-dotenv==1.0.1
 # Groq AI Client
 groq==0.5.0
 
-# Machine Learning / Data Processing
-numpy==1.23.5
-pandas==1.5.3
+# Machine Learning / Data Processing (Python 3.13 compatible)
+numpy==1.26.4
+pandas==2.2.1
 scikit-learn==1.4.1
 catboost==1.2.2
 plotly==5.18.0
