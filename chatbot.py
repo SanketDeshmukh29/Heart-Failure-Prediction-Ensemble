@@ -2,13 +2,32 @@ from flask import Blueprint, request, jsonify
 import os
 from dotenv import load_dotenv
 from groq import Groq
+import re
 
 load_dotenv()
 
 chatbot_bp = Blueprint('chatbot', __name__)
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+# -------------------------------
+# SAFE GROQ CLIENT INITIALIZATION
+# -------------------------------
+GROQ_KEY = os.getenv("GROQ_API_KEY")
 
+if not GROQ_KEY:
+    print("ERROR: GROQ_API_KEY is NOT set in environment variables.")
+    client = None
+else:
+    try:
+        # Fix proxy error: ensure correct httpx version is installed
+        client = Groq(api_key=GROQ_KEY)
+    except Exception as e:
+        print("Groq client initialization failed:", e)
+        client = None
+
+
+# -------------------------------
+# HEART KEYWORDS
+# -------------------------------
 HEART_RELATED_KEYWORDS = [
     "heart", "cardiac", "cardiovascular", "cholesterol", "blood pressure",
     "heart attack", "heart failure", "hypertension", "arrhythmia", "angina",
@@ -30,110 +49,93 @@ def is_heart_related(message: str) -> bool:
     return any(keyword in message for keyword in HEART_RELATED_KEYWORDS)
 
 
-import re
-
+# -------------------------------
+# FORMAT RESPONSE (HTML OUTPUT)
+# -------------------------------
 def format_response(text: str) -> str:
-    """
-    Convert model text (which may contain Markdown-like bullets and bold)
-    into safe, nicely-formatted HTML paragraphs, lists, and <strong> tags.
-    """
-
-    # Normalize line endings
     text = text.replace("\r\n", "\n").strip()
 
-    # Convert bold markdown **bold** -> <strong>bold</strong>
-    def bold_repl(m):
-        return f"<strong>{m.group(1)}</strong>"
-    text = re.sub(r"\*\*(.+?)\*\*", bold_repl, text)
+    # Convert markdown bold to HTML <strong>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
 
-    # Split into lines and group into paragraphs / lists
     lines = text.split("\n")
-
     html_parts = []
-    list_buffer = None      # None or ("ul"|"ol", [items])
+    list_buffer = None  # ("ul"/"ol", items)
 
     def flush_list():
         nonlocal list_buffer
         if list_buffer:
-            typ, items = list_buffer
-            if typ == "ul":
-                html_parts.append("<ul>")
-                for it in items:
-                    html_parts.append(f"<li>{it}</li>")
-                html_parts.append("</ul>")
-            else:
-                html_parts.append("<ol>")
-                for it in items:
-                    html_parts.append(f"<li>{it}</li>")
-                html_parts.append("</ol>")
+            list_type, items = list_buffer
+            html_parts.append(f"<{list_type}>")
+            for it in items:
+                html_parts.append(f"<li>{it}</li>")
+            html_parts.append(f"</{list_type}>")
             list_buffer = None
 
-    for raw in lines:
-        line = raw.strip()
-        if not line:
-            # empty line -> paragraph break
+    for line in lines:
+        raw = line.strip()
+        if not raw:
             flush_list()
             continue
 
-        # unordered list markers: -, * or •
-        m_ul = re.match(r"^(\*|-|•)\s+(.*)$", line)
-        # ordered list: 1. 2) etc.
-        m_ol = re.match(r"^(\d+)[\.\)]\s+(.*)$", line)
+        # UL
+        m_ul = re.match(r"^(\*|-|•)\s+(.*)$", raw)
+        # OL
+        m_ol = re.match(r"^(\d+)[\.\)]\s+(.*)$", raw)
 
         if m_ul:
-            item = m_ul.group(2).strip()
-            if list_buffer and list_buffer[0] != "ul":
+            if not list_buffer or list_buffer[0] != "ul":
                 flush_list()
-            if not list_buffer:
                 list_buffer = ("ul", [])
-            list_buffer[1].append(item)
+            list_buffer[1].append(m_ul.group(2).strip())
+
         elif m_ol:
-            item = m_ol.group(2).strip()
-            if list_buffer and list_buffer[0] != "ol":
+            if not list_buffer or list_buffer[0] != "ol":
                 flush_list()
-            if not list_buffer:
                 list_buffer = ("ol", [])
-            list_buffer[1].append(item)
+            list_buffer[1].append(m_ol.group(2).strip())
+
         else:
-            # a normal paragraph line — flush any list and append as paragraph
             flush_list()
-            # If line starts with a numbered bullet in plain words like "1)" already handled above
-            html_parts.append(f"<p>{line}</p>")
+            html_parts.append(f"<p>{raw}</p>")
 
-    # flush any trailing list
     flush_list()
-
-    # join and return
     return "\n".join(html_parts)
 
 
+# -------------------------------
+# GROQ GENERATION FUNCTION
+# -------------------------------
 def groq_generate(prompt: str) -> str:
-    """
-    Generate a reply from Groq with a system instruction to avoid raw asterisks
-    and to return complete answers. Also requests more tokens.
-    """
-    system_message = (
-        "You are a helpful, concise medical assistant for heart-health. "
-        "Respond clearly and completely in plain text. Do NOT use raw asterisks (*) or other markdown "
-        "characters to denote bullets. If you want to present items, use numbered sentences or start new lines; "
-        "the frontend will convert lists into HTML. Keep answers complete and avoid trailing incomplete sentences."
-    )
+    if client is None:
+        return "Groq client is not initialized. Please check GROQ_API_KEY settings."
 
-    chat_completion = client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": prompt}
-        ],
-        # increase token budget so answers don't get truncated
-        max_tokens=400
-    )
+    try:
+        system_message = (
+            "You are a helpful medical assistant for heart-health. "
+            "Respond clearly in plain text. Do NOT use raw asterisks (*) for bullets. "
+            "Use simple numbered sentences or new lines. Avoid incomplete responses."
+        )
 
-    # message.content is the proper accessor for the Groq SDK objects
-    return chat_completion.choices[0].message.content
+        chat_completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=400
+        )
+
+        return chat_completion.choices[0].message.content
+
+    except Exception as e:
+        print("Groq API Error:", e)
+        return "Sorry, I am unable to process your request right now. Please try again later."
 
 
-
+# -------------------------------
+# FLASK ROUTE
+# -------------------------------
 @chatbot_bp.route('/api/chat', methods=['POST'])
 def chat():
     data = request.get_json()
